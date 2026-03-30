@@ -1,0 +1,108 @@
+name: Super Clicker Final Fix
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Prepare Project and Libs
+        run: |
+          # 1. Чистим мусор
+          rm -rf proj *.zip SDL2*
+          
+          # 2. Качаем библиотеки (Прямые проверенные ссылки)
+          curl -L https://github.com/libsdl-org/SDL/releases/download/release-2.28.5/SDL2-2.28.5.zip -o sdl2.zip
+          curl -L https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.2/SDL2_image-2.8.2.zip -o sdl_img.zip
+          curl -L https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.zip -o sdl_mix.zip
+          curl -L https://github.com/libsdl-org/SDL_ttf/releases/download/release-2.22.0/SDL2_ttf-2.22.0.zip -o sdl_ttf.zip
+
+          # 3. Распаковываем
+          unzip -q sdl2.zip && unzip -q sdl_img.zip && unzip -q sdl_mix.zip && unzip -q sdl_ttf.zip
+
+          # 4. Создаем структуру
+          cp -r SDL2-2.28.5/android-project ./proj
+          JNI_PATH="./proj/app/src/main/jni"
+          mkdir -p $JNI_PATH/SDL2 $JNI_PATH/SDL2_image $JNI_PATH/SDL2_mixer $JNI_PATH/SDL2_ttf $JNI_PATH/src
+          mkdir -p ./proj/app/src/main/assets
+
+          # 5. Копируем всё в JNI
+          cp -r SDL2-2.28.5/* $JNI_PATH/SDL2/
+          cp -r SDL2_image-2.8.2/* $JNI_PATH/SDL2_image/
+          cp -r SDL2_mixer-2.8.0/* $JNI_PATH/SDL2_mixer/
+          cp -r SDL2_ttf-2.22.0/* $JNI_PATH/SDL2_ttf/
+
+          # 6. Код и ассеты
+          [ -f "main.cxx" ] && cp main.cxx $JNI_PATH/src/main.cpp || ([ -f "main.cpp" ] && cp main.cpp $JNI_PATH/src/main.cpp)
+          [ -f "coin.png" ] && cp coin.png ./proj/app/src/main/assets/ || touch ./proj/app/src/main/assets/coin.png
+          [ -f "coin.wav" ] && cp coin.wav ./proj/app/src/main/assets/ || touch ./proj/app/src/main/assets/coin.wav
+          [ -f "font.ttf" ] && cp font.ttf ./proj/app/src/main/assets/ || touch ./proj/app/src/main/assets/font.ttf
+
+          # 7. Android.mk (Жесткие пути)
+          cat <<EOF > $JNI_PATH/Android.mk
+          LOCAL_PATH := \$(call my-dir)
+          include \$(LOCAL_PATH)/SDL2/Android.mk
+          include \$(LOCAL_PATH)/SDL2_image/Android.mk
+          include \$(LOCAL_PATH)/SDL2_mixer/Android.mk
+          include \$(LOCAL_PATH)/SDL2_ttf/Android.mk
+          include \$(CLEAR_VARS)
+          LOCAL_MODULE := main
+          LOCAL_SRC_FILES := src/main.cpp
+          LOCAL_C_INCLUDES := \$(LOCAL_PATH)/SDL2/include \$(LOCAL_PATH)/SDL2_image \$(LOCAL_PATH)/SDL2_mixer \$(LOCAL_PATH)/SDL2_ttf
+          LOCAL_SHARED_LIBRARIES := SDL2 SDL2_image SDL2_mixer SDL2_ttf
+          LOCAL_LDLIBS := -lGLESv2 -llog -landroid -lz
+          include \$(BUILD_SHARED_LIBRARY)
+          EOF
+
+          # 8. Application.mk (Разрешаем пропуски зависимостей)
+          echo "APP_ABI := arm64-v8a
+          APP_PLATFORM := android-21
+          APP_STL := c++_shared
+          APP_ALLOW_MISSING_DEPS := true" > $JNI_PATH/Application.mk
+
+          # 9. build.gradle
+          cat <<EOF > ./proj/app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+              namespace "com.coin.clicker"
+              compileSdkVersion 34
+              defaultConfig {
+                  applicationId "com.coin.clicker"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  externalNativeBuild { 
+                      ndkBuild { 
+                          abiFilters 'arm64-v8a'
+                          arguments "NDK_MODULE_PATH=src/main/jni"
+                      } 
+                  }
+              }
+              sourceSets { main { assets.srcDirs = ['src/main/assets'] } }
+              externalNativeBuild { ndkBuild { path 'src/main/jni/Android.mk' } }
+          }
+          EOF
+
+      - name: Build APK
+        working-directory: ./proj
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clicker-Final-Success
+          path: proj/app/build/outputs/apk/debug/*.apk
